@@ -36,6 +36,9 @@ DMG_PATH="${DIST_DIR}/${APP_NAME}.dmg"
 EXECUTABLE_SRC="${SCRIPT_DIR}/.build/release/${APP_NAME}"
 ICON_SRC="${SCRIPT_DIR}/icon/AppIcon.png"
 ICNS_NAME="AppIcon"
+DMG_BG="${SCRIPT_DIR}/icon/dmg-background.tiff"
+DMG_WINDOW_W=600
+DMG_WINDOW_H=400
 
 # --- 1. Build release --------------------------------------------------------
 echo "==> Building release with swift build -c release"
@@ -146,21 +149,68 @@ elif [[ -n "${SIGN_IDENTITY}" ]]; then
 fi
 
 # --- 4. Create .dmg (with drag-to-Applications layout) -----------------------
-# Stage the app next to a symlink to /Applications so the mounted .dmg lets the
-# user drag the app onto Applications.
+# Stage the app next to a symlink to /Applications (so users can drag the app
+# onto Applications), plus a background image, then lay out the Finder window.
 echo "==> Creating ${APP_NAME}.dmg"
 STAGING_PARENT="$(mktemp -d)"
 STAGING="${STAGING_PARENT}/stage"
-mkdir -p "${STAGING}"
+mkdir -p "${STAGING}/.background"
 ditto "${APP_DIR}" "${STAGING}/${APP_NAME}.app"
 ln -s /Applications "${STAGING}/Applications"
+[[ -f "${DMG_BG}" ]] && cp "${DMG_BG}" "${STAGING}/.background/background.tiff"
 
-hdiutil create \
-    -volname "${APP_NAME}" \
-    -srcfolder "${STAGING}" \
-    -ov \
-    -format UDZO \
-    "${DMG_PATH}"
+# Build a read-write image we can lay out, then convert to compressed read-only.
+RW_DMG="${STAGING_PARENT}/rw.dmg"
+hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGING}" \
+    -ov -format UDRW "${RW_DMG}" >/dev/null
+
+# Detach any stale volume of the same name so we mount at a predictable path.
+for v in "/Volumes/${APP_NAME}"*; do
+    [[ -d "$v" ]] && hdiutil detach "$v" >/dev/null 2>&1 || true
+done
+
+ATTACH_OUT="$(hdiutil attach "${RW_DMG}" -noautoopen)"
+DEVICE="$(echo "${ATTACH_OUT}" | grep -E '^/dev/' | head -1 | awk '{print $1}')"
+MOUNT_DIR="$(echo "${ATTACH_OUT}" | sed -nE 's#.*(/Volumes/.*)$#\1#p' | head -1)"
+VOL_NAME="$(basename "${MOUNT_DIR}")"
+
+# Finder layout (background, icon size, positions). Non-fatal: if Finder
+# automation is denied, the .dmg still works (just without the pretty layout).
+if [[ -n "${VOL_NAME}" && -f "${MOUNT_DIR}/.background/background.tiff" ]]; then
+    echo "==> Laying out the .dmg window"
+    osascript - "${VOL_NAME}" "${APP_NAME}" "${DMG_WINDOW_W}" "${DMG_WINDOW_H}" <<'OSA' || echo "    (mise en page Finder ignorée — autorisation refusée ?)"
+on run argv
+    set volName to item 1 of argv
+    set appName to item 2 of argv
+    set winW to (item 3 of argv) as integer
+    set winH to (item 4 of argv) as integer
+    tell application "Finder"
+        tell disk volName
+            open
+            set theWindow to container window
+            set current view of theWindow to icon view
+            set toolbar visible of theWindow to false
+            set statusbar visible of theWindow to false
+            set the bounds of theWindow to {200, 120, 200 + winW, 120 + winH}
+            set opts to the icon view options of theWindow
+            set arrangement of opts to not arranged
+            set icon size of opts to 128
+            set text size of opts to 12
+            set background picture of opts to file ".background:background.tiff"
+            set position of item (appName & ".app") of theWindow to {150, 200}
+            set position of item "Applications" of theWindow to {450, 200}
+            update without registering applications
+            delay 1
+            close
+        end tell
+    end tell
+end run
+OSA
+fi
+
+sync
+hdiutil detach "${DEVICE}" >/dev/null 2>&1 || hdiutil detach "${MOUNT_DIR}" >/dev/null 2>&1 || true
+hdiutil convert "${RW_DMG}" -format UDZO -ov -o "${DMG_PATH}" >/dev/null
 rm -rf "${STAGING_PARENT}"
 
 # --- 5. Notarize + staple the .dmg itself ------------------------------------
