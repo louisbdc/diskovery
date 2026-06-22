@@ -154,6 +154,17 @@ hdiutil create \
     -format UDZO \
     "${DMG_PATH}"
 
+# --- 5. Notarize + staple the .dmg itself ------------------------------------
+# So the downloaded .dmg opens cleanly too (not just the app inside it).
+if [[ -n "${SIGN_IDENTITY}" && -n "${NOTARY_PROFILE}" ]]; then
+    echo "==> Notarizing the .dmg"
+    xcrun notarytool submit "${DMG_PATH}" \
+        --keychain-profile "${NOTARY_PROFILE}" --wait
+    echo "==> Stapling the .dmg"
+    xcrun stapler staple "${DMG_PATH}"
+    xcrun stapler validate "${DMG_PATH}"
+fi
+
 echo "==> Done"
 echo "    App: ${APP_DIR}"
 echo "    DMG: ${DMG_PATH}"

@@ -28,29 +28,25 @@ swift test
 ./make-dmg.sh
 ```
 
-Génère `dist/Diskovery.app` et `dist/Diskovery.dmg`. Le bundle est signé en ad-hoc
-(signature propre) mais **non notarisé** par Apple.
+Sans variables d'environnement, le bundle est signé en **ad-hoc** (dev local).
 
-## Première ouverture (app téléchargée)
+### Build signé Developer ID + notarisé (distribution)
 
-Diskovery n'est pas notarisée par Apple (la notarisation nécessite un compte Apple
-Developer payant). Après téléchargement, macOS affiche donc **un avertissement au
-premier lancement**. C'est normal — il suffit de l'autoriser une fois :
+Pour un `.dmg` qui s'ouvre **sans aucun avertissement** une fois téléchargé :
 
-**macOS 15 (Sequoia) et plus récent :**
-1. Double-cliquez sur Diskovery → un message indique qu'elle ne peut pas être ouverte.
-2. Ouvrez **Réglages Système → Confidentialité et sécurité**.
-3. En bas, à côté de « Diskovery a été bloqué… », cliquez **« Ouvrir quand même »**.
-4. Confirmez. Les lancements suivants se font normalement.
-
-**macOS 14 (Sonoma) et antérieur :**
-1. **Clic droit** (ou Ctrl-clic) sur Diskovery → **Ouvrir**.
-2. Dans la boîte de dialogue, cliquez **Ouvrir**.
-
-**Alternative en Terminal** (retire la mise en quarantaine) :
 ```bash
-xattr -dr com.apple.quarantine /Applications/Diskovery.app
+export DISKOVERY_SIGN_IDENTITY="Developer ID Application: VOTRE NOM (TEAMID)"
+export DISKOVERY_NOTARY_PROFILE="diskovery"   # via `xcrun notarytool store-credentials`
+./make-dmg.sh
 ```
+
+Le script signe (Developer ID + hardened runtime + timestamp), **notarise** l'app
+et le `.dmg` auprès d'Apple, et **agrafe** les tickets. Résultat : ouverture propre,
+sans manipulation côté utilisateur.
+
+> Note : un build **ad-hoc** (sans ces variables) déclenche, lui, un avertissement
+> Gatekeeper au premier lancement (clic droit → Ouvrir, ou Réglages → Confidentialité
+> et sécurité → « Ouvrir quand même »).
 
 ## Benchmark
 
