@@ -69,6 +69,16 @@ let ink = NSColor(calibratedRed: 0.24, green: 0.30, blue: 0.38, alpha: 1)
     ]
 )
 
+// Note de bas de fenêtre.
+"Une fois installé, vous pouvez éjecter puis supprimer ce .dmg.".draw(
+    in: NSRect(x: 0, y: 34, width: W, height: 20),
+    withAttributes: [
+        .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+        .foregroundColor: ink.withAlphaComponent(0.55),
+        .paragraphStyle: para,
+    ]
+)
+
 NSGraphicsContext.restoreGraphicsState()
 
 guard let data = rep.representation(using: .png, properties: [:]) else { exit(1) }
