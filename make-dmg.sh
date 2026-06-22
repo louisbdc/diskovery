@@ -26,6 +26,8 @@ RESOURCES_DIR="${APP_DIR}/Contents/Resources"
 INFO_PLIST="${APP_DIR}/Contents/Info.plist"
 DMG_PATH="${DIST_DIR}/${APP_NAME}.dmg"
 EXECUTABLE_SRC="${SCRIPT_DIR}/.build/release/${APP_NAME}"
+ICON_SRC="${SCRIPT_DIR}/icon/AppIcon.png"
+ICNS_NAME="AppIcon"
 
 # --- 1. Build release --------------------------------------------------------
 echo "==> Building release with swift build -c release"
@@ -45,6 +47,27 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 echo "==> Assembling ${APP_NAME}.app"
 cp "${EXECUTABLE_SRC}" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
+
+# --- 3b. Generate the app icon (.icns) from icon/AppIcon.png -----------------
+ICON_PLIST_KEYS=""
+if [[ -f "${ICON_SRC}" ]]; then
+    echo "==> Generating app icon"
+    ICONSET="$(mktemp -d)/${ICNS_NAME}.iconset"
+    mkdir -p "${ICONSET}"
+    # macOS expects these exact size/scale variants.
+    for spec in "16 16x16" "32 16x16@2x" "32 32x32" "64 32x32@2x" \
+                "128 128x128" "256 128x128@2x" "256 256x256" "512 256x256@2x" \
+                "512 512x512" "1024 512x512@2x"; do
+        size="${spec% *}"
+        label="${spec#* }"
+        sips -z "${size}" "${size}" "${ICON_SRC}" --out "${ICONSET}/icon_${label}.png" >/dev/null
+    done
+    iconutil -c icns "${ICONSET}" -o "${RESOURCES_DIR}/${ICNS_NAME}.icns"
+    rm -rf "$(dirname "${ICONSET}")"
+    ICON_PLIST_KEYS=$'\t<key>CFBundleIconFile</key>\n\t<string>'"${ICNS_NAME}"$'</string>\n\t<key>CFBundleIconName</key>\n\t<string>'"${ICNS_NAME}"$'</string>'
+else
+    echo "==> No icon found at ${ICON_SRC}, skipping"
+fi
 
 cat > "${INFO_PLIST}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -73,6 +96,7 @@ cat > "${INFO_PLIST}" <<PLIST
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+${ICON_PLIST_KEYS}
 </dict>
 </plist>
 PLIST
