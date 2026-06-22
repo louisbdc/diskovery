@@ -17,6 +17,14 @@ SHORT_VERSION="1.0.0"
 BUILD_VERSION="1"
 MIN_SYSTEM_VERSION="14.0"
 
+# --- Signing / notarization (optional) ---------------------------------------
+# To produce a notarized, Gatekeeper-clean .dmg, set these (e.g. in your shell):
+#   export DISKOVERY_SIGN_IDENTITY="Developer ID Application: Jean Dupont (ABCDE12345)"
+#   export DISKOVERY_NOTARY_PROFILE="diskovery"   # from `xcrun notarytool store-credentials`
+# Leave them empty to fall back to a clean ad-hoc signature (dev / non-notarized).
+SIGN_IDENTITY="${DISKOVERY_SIGN_IDENTITY:-}"
+NOTARY_PROFILE="${DISKOVERY_NOTARY_PROFILE:-}"
+
 # --- Paths (resolve relative to this script) ---------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="${SCRIPT_DIR}/dist"
@@ -105,14 +113,37 @@ PLIST
 echo "==> Validating Info.plist"
 plutil -lint "${INFO_PLIST}"
 
-# --- 3c. Ad-hoc sign the bundle ----------------------------------------------
-# This produces a clean (well-formed) signature so a downloaded, quarantined app
-# shows the softer "unidentified developer" prompt instead of "is damaged".
-# NOTE: this is NOT a Developer ID signature and the app is NOT notarized, so a
-# first-launch Gatekeeper warning is still expected (see README "Première ouverture").
-echo "==> Ad-hoc signing the bundle"
-codesign --force --deep --sign - "${APP_DIR}"
+# --- 3c. Sign the bundle -----------------------------------------------------
+if [[ -n "${SIGN_IDENTITY}" ]]; then
+    # Developer ID signature with hardened runtime + secure timestamp (required
+    # for notarization). Result: a Gatekeeper-clean app once notarized.
+    echo "==> Signing with Developer ID: ${SIGN_IDENTITY}"
+    codesign --force --deep --options runtime --timestamp \
+        --sign "${SIGN_IDENTITY}" "${APP_DIR}"
+else
+    # Fallback: clean ad-hoc signature (NOT notarized — first-launch warning,
+    # see README "Première ouverture").
+    echo "==> Ad-hoc signing the bundle (not notarized)"
+    codesign --force --deep --sign - "${APP_DIR}"
+fi
 codesign --verify --deep --strict "${APP_DIR}" && echo "    signature OK"
+
+# --- 3d. Notarize + staple the app -------------------------------------------
+# Notarize the app itself (then staple it) so the copied-out .app works offline.
+if [[ -n "${SIGN_IDENTITY}" && -n "${NOTARY_PROFILE}" ]]; then
+    echo "==> Notarizing (this can take a minute)"
+    NOTARIZE_ZIP="${DIST_DIR}/${APP_NAME}-notarize.zip"
+    ditto -c -k --keepParent "${APP_DIR}" "${NOTARIZE_ZIP}"
+    xcrun notarytool submit "${NOTARIZE_ZIP}" \
+        --keychain-profile "${NOTARY_PROFILE}" --wait
+    rm -f "${NOTARIZE_ZIP}"
+
+    echo "==> Stapling the notarization ticket"
+    xcrun stapler staple "${APP_DIR}"
+    xcrun stapler validate "${APP_DIR}"
+elif [[ -n "${SIGN_IDENTITY}" ]]; then
+    echo "==> Signed with Developer ID but DISKOVERY_NOTARY_PROFILE unset — skipping notarization"
+fi
 
 # --- 4. Create .dmg ----------------------------------------------------------
 echo "==> Creating ${APP_NAME}.dmg"
