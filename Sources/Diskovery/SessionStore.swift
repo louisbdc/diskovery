@@ -10,4 +10,6 @@ import Observation
 final class SessionStore {
     let diskUsage = FolderNavigatorViewModel()
     let nodeModules = NodeModulesViewModel()
+    let largeFiles = LargeFilesViewModel()
+    let buildCaches = BuildCachesViewModel()
 }

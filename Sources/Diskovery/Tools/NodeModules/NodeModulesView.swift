@@ -5,8 +5,20 @@ struct NodeModulesView: View {
     @Bindable var viewModel: NodeModulesViewModel
     @State private var isImporterPresented = false
     @State private var sortOrder = [KeyPathComparator(\Entry.sizeBytes, order: .reverse)]
-    @State private var pendingSingleDelete: Entry?
-    @State private var showBulkConfirm = false
+    @State private var selection: Set<URL> = []
+    @State private var pendingDeletion: PendingDeletion?
+
+    private var selectedEntries: [Entry] {
+        viewModel.filteredEntries.filter { selection.contains($0.url) }
+    }
+
+    private var selectedSize: Int64 {
+        selectedEntries.reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    private var showsSelectionBar: Bool {
+        (viewModel.state == .loaded || viewModel.state == .scanning) && !viewModel.filteredEntries.isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -27,6 +39,17 @@ struct NodeModulesView: View {
                 StatusBanner(message: message)
             }
 
+            if showsSelectionBar {
+                Divider()
+                SelectionBar(
+                    selectedCount: selection.count,
+                    selectedSize: selectedSize,
+                    onSelectAll: { selection = Set(viewModel.filteredEntries.map(\.url)) },
+                    onClear: { selection = [] },
+                    onDelete: { pendingDeletion = PendingDeletion(many: selectedEntries) }
+                )
+            }
+
             Divider()
 
             content
@@ -38,36 +61,12 @@ struct NodeModulesView: View {
             allowedContentTypes: [.folder],
             allowsMultipleSelection: false
         ) { result in
+            selection = []
             viewModel.handleImport(result)
         }
-        .confirmationDialog(
-            "Mettre ce node_modules à la corbeille ?",
-            isPresented: Binding(
-                get: { pendingSingleDelete != nil },
-                set: { if !$0 { pendingSingleDelete = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingSingleDelete
-        ) { entry in
-            Button("Mettre à la corbeille", role: .destructive) {
-                viewModel.delete(entry)
-                pendingSingleDelete = nil
-            }
-            Button("Annuler", role: .cancel) { pendingSingleDelete = nil }
-        } message: { entry in
-            Text("\(entry.url.path)\n\(SizeFormatter.string(entry.sizeBytes)) seront récupérés.")
-        }
-        .confirmationDialog(
-            "Mettre à la corbeille tous les node_modules de plus de \(viewModel.threshold.label) ?",
-            isPresented: $showBulkConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Mettre \(viewModel.oldCount) dossiers à la corbeille", role: .destructive) {
-                viewModel.deleteOld()
-            }
-            Button("Annuler", role: .cancel) {}
-        } message: {
-            Text("\(viewModel.oldCount) dossiers · \(SizeFormatter.string(viewModel.oldTotalSize)) seront récupérés.")
+        .deleteConfirmation($pendingDeletion) { urls, permanently in
+            viewModel.deleteSelected(urls, permanently: permanently)
+            selection = []
         }
     }
 
@@ -90,14 +89,16 @@ struct NodeModulesView: View {
             .help("Au-delà de cette ancienneté, un node_modules est marqué « ancien »")
 
             if viewModel.state == .loaded && viewModel.oldCount > 0 {
-                Button(role: .destructive) {
-                    showBulkConfirm = true
+                Button {
+                    selection = Set(viewModel.oldEntries.map(\.url))
+                    pendingDeletion = PendingDeletion(many: viewModel.oldEntries)
                 } label: {
                     Label(
                         "Supprimer anciens (\(viewModel.oldCount) · \(SizeFormatter.string(viewModel.oldTotalSize)))",
-                        systemImage: "trash"
+                        systemImage: "clock.badge.xmark"
                     )
                 }
+                .help("Sélectionne et propose de supprimer les node_modules anciens")
             }
 
             Spacer()
@@ -115,17 +116,16 @@ struct NodeModulesView: View {
     private var content: some View {
         switch viewModel.state {
         case .idle:
-            ContentUnavailableView(
-                "Choisissez un dossier",
-                systemImage: "shippingbox",
-                description: Text("Sélectionnez un dossier pour trouver tous les node_modules. Les dossiers anciens sont mis en avant.")
+            ToolWelcome(
+                icon: "shippingbox",
+                title: "Faites le ménage dans vos node_modules",
+                message: "Choisissez un dossier de projets pour trouver tous les node_modules. Les dossiers les plus anciens, souvent oubliés, sont mis en avant.",
+                hint: "Astuce : « Supprimer anciens » coche d'un coup les dossiers oubliés.",
+                actionTitle: "Choisir un dossier",
+                action: { isImporterPresented = true }
             )
         case .scanning where viewModel.entries.isEmpty:
-            ContentUnavailableView {
-                Label("Recherche des node_modules…", systemImage: "magnifyingglass")
-            } description: {
-                Text("Exploration parallèle de l'arborescence en cours.")
-            }
+            ScanningView(message: "Recherche des node_modules…")
         case .scanning, .loaded:
             table
         case .error(let message):
@@ -138,7 +138,15 @@ struct NodeModulesView: View {
     }
 
     private var table: some View {
-        Table(viewModel.filteredEntries.sorted(using: sortOrder), sortOrder: $sortOrder) {
+        // Proportions calculées sur `filteredEntries` (ce que l'utilisateur voit
+        // réellement) : la barre reste cohérente avec une recherche active.
+        let fractions = SizeProportion.fractions(for: viewModel.filteredEntries)
+        return Table(viewModel.filteredEntries.sorted(using: sortOrder), sortOrder: $sortOrder) {
+            TableColumn("") { entry in
+                SelectionCheckbox(selection: $selection, url: entry.url)
+            }
+            .width(28)
+
             TableColumn("Chemin", value: \.url.path) { entry in
                 pathCell(entry)
             }
@@ -149,8 +157,11 @@ struct NodeModulesView: View {
             .width(min: 120, ideal: 150)
 
             TableColumn("Taille", value: \.sizeBytes) { entry in
-                Text(SizeFormatter.string(entry.sizeBytes))
-                    .monospacedDigit()
+                SizeBarCell(
+                    sizeBytes: entry.sizeBytes,
+                    fraction: fractions[entry.id] ?? 0,
+                    tint: viewModel.isOld(entry) ? .orange : .accentColor
+                )
             }
             .width(min: 100, ideal: 120)
         }
@@ -179,7 +190,7 @@ struct NodeModulesView: View {
         .onTapGesture(count: 2) { FinderReveal.reveal(entry.url) }
         .contextMenu {
             Button("Révéler dans le Finder") { FinderReveal.reveal(entry.url) }
-            Button("Mettre à la corbeille", role: .destructive) { pendingSingleDelete = entry }
+            Button("Supprimer…", role: .destructive) { pendingDeletion = PendingDeletion(single: entry) }
         }
     }
 

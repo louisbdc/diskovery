@@ -213,21 +213,29 @@ public enum FileScanner {
         }
     }
 
-    /// Tous les dossiers nommés "node_modules" sous `root`, avec leur taille récursive.
-    /// Ne descend pas dans un node_modules trouvé. Trié par taille décroissante.
-    public static func findNodeModules(under root: URL) async -> [Entry] {
-        await Task.detached(priority: .userInitiated) {
-            let matches = nodeModuleMatches(under: root) { _ in }
-            let found = parallelMap(matches) { nodeModuleEntry(for: $0) }
+    /// Tous les dossiers dont le nom figure dans `names` sous `root`, avec leur
+    /// taille récursive. Ne descend pas dans un dossier trouvé (`-prune`). Trié
+    /// par taille décroissante. Recherche puis mesure parallélisées sur tous les cœurs.
+    public static func findDirectories(matching names: Set<String>, under root: URL) async -> [Entry] {
+        guard !names.isEmpty else { return [] }
+        return await Task.detached(priority: .userInitiated) {
+            let matches = directoryMatches(matching: names, under: root) { _ in }
+            let found = parallelMap(matches) { directoryEntry(for: $0) }
             return found.sorted { $0.sizeBytes > $1.sizeBytes }
         }.value
+    }
+
+    /// Tous les dossiers nommés "node_modules" sous `root` (cas particulier de
+    /// `findDirectories(matching:)`), avec leur taille récursive.
+    public static func findNodeModules(under root: URL) async -> [Entry] {
+        await findDirectories(matching: ["node_modules"], under: root)
     }
 
     /// Localise (sans mesurer) tous les dossiers `node_modules` sous `root`.
     /// Recherche parallélisée sur tous les cœurs.
     public static func locateNodeModules(under root: URL) async -> [URL] {
         await Task.detached(priority: .userInitiated) {
-            nodeModuleMatches(under: root) { _ in }
+            directoryMatches(matching: ["node_modules"], under: root) { _ in }
         }.value
     }
 
@@ -236,10 +244,23 @@ public enum FileScanner {
     /// (`isDiscovering`). Puis la **mesure** des tailles, parallèle elle aussi,
     /// remplit le tableau au fur et à mesure.
     public static func findNodeModulesStream(under root: URL) -> AsyncStream<ScanProgress> {
+        findDirectoriesStream(matching: ["node_modules"], under: root)
+    }
+
+    /// Variante en flux générique : la **recherche** des dossiers dont le nom est
+    /// dans `names` est parallélisée et émet une progression à chaque trouvaille
+    /// (`isDiscovering`). Puis la **mesure** des tailles, parallèle elle aussi,
+    /// remplit le tableau au fur et à mesure.
+    public static func findDirectoriesStream(matching names: Set<String>, under root: URL) -> AsyncStream<ScanProgress> {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            guard !names.isEmpty else {
+                continuation.yield(ScanProgress(entries: [], completed: 0, total: 0))
+                continuation.finish()
+                return
+            }
             let task = Task.detached(priority: .userInitiated) {
                 // --- Phase 1 : recherche parallèle, progression en direct ---
-                let matches = nodeModuleMatches(under: root) { foundSoFar in
+                let matches = directoryMatches(matching: names, under: root) { foundSoFar in
                     if Task.isCancelled { return }
                     continuation.yield(ScanProgress(
                         entries: [],
@@ -264,7 +285,7 @@ public enum FileScanner {
 
                 await withTaskGroup(of: Entry.self) { group in
                     for match in matches {
-                        group.addTask { nodeModuleEntry(for: match) }
+                        group.addTask { directoryEntry(for: match) }
                     }
                     var done = 0
                     for await entry in group {
@@ -285,10 +306,10 @@ public enum FileScanner {
     /// La recherche est **parallélisée** : chaque sous-dossier de premier niveau
     /// est exploré sur un cœur distinct. `onFound` est appelé (depuis plusieurs
     /// threads) à chaque correspondance, avec le nombre total trouvé jusque-là.
-    private static func nodeModuleMatches(under root: URL, onFound: @escaping (Int) -> Void) -> [URL] {
-        // `find` évalue aussi le chemin de départ : si la racine elle-même est un
-        // dossier nommé node_modules, on la renvoie sans descendre (comme `-prune`).
-        if isRealDirectory(root), root.lastPathComponent == "node_modules" {
+    private static func directoryMatches(matching names: Set<String>, under root: URL, onFound: @escaping (Int) -> Void) -> [URL] {
+        // `find` évalue aussi le chemin de départ : si la racine elle-même porte
+        // un nom cible, on la renvoie sans descendre (comme `-prune`).
+        if isRealDirectory(root), names.contains(root.lastPathComponent) {
             onFound(1)
             return [root]
         }
@@ -306,12 +327,12 @@ public enum FileScanner {
         // de quelques niveaux, pour équilibrer la charge même si un seul dossier
         // de premier niveau domine. L'expansion ne fait que partitionner l'arbre ;
         // l'enregistrement se fait uniquement dans le parcours parallèle ci-dessous,
-        // donc chaque node_modules est vu exactement une fois.
-        let units = buildSearchFrontier(from: root)
+        // donc chaque dossier cible est vu exactement une fois.
+        let units = buildSearchFrontier(from: root, matching: names)
 
         nonisolated(unsafe) let recordUnsafe = record
         DispatchQueue.concurrentPerform(iterations: units.count) { index in
-            walkForNodeModules(units[index], record: recordUnsafe)
+            walkForDirectories(units[index], matching: names, record: recordUnsafe)
         }
 
         return matches.withLock { $0 }
@@ -321,7 +342,7 @@ public enum FileScanner {
     /// en développant niveau par niveau jusqu'à obtenir au moins `4 × cœurs`
     /// unités. Renvoie les dossiers « normaux » restant à parcourir et les
     /// node_modules terminaux (à enregistrer sans descendre), sous-arbres disjoints.
-    private static func buildSearchFrontier(from root: URL) -> [URL] {
+    private static func buildSearchFrontier(from root: URL, matching names: Set<String>) -> [URL] {
         let target = max(ProcessInfo.processInfo.activeProcessorCount * 4, 8)
         var frontier: [URL] = [root]
         var terminals: [URL] = []
@@ -338,7 +359,7 @@ public enum FileScanner {
 
                 for child in children {
                     let name = child.lastPathComponent
-                    if name == "node_modules" {
+                    if names.contains(name) {
                         if isRealDirectory(child) { terminals.append(child) }
                     } else if prunedDirectoryNames.contains(name) {
                         continue
@@ -351,8 +372,8 @@ public enum FileScanner {
             frontier = next
         }
 
-        // Unités à parcourir : dossiers normaux non encore développés + node_modules
-        // terminaux (walkForNodeModules se contente de les enregistrer).
+        // Unités à parcourir : dossiers normaux non encore développés + dossiers
+        // cibles terminaux (walkForDirectories se contente de les enregistrer).
         return frontier + terminals
     }
 
@@ -361,13 +382,13 @@ public enum FileScanner {
     /// (historique git, etc.). Les élaguer accélère fortement le parcours.
     private static let prunedDirectoryNames: Set<String> = [".git", ".hg", ".svn"]
 
-    /// Parcourt séquentiellement une branche, signalant chaque node_modules
-    /// rencontré sans y descendre.
-    private static func walkForNodeModules(_ url: URL, record: (URL) -> Void) {
+    /// Parcourt séquentiellement une branche, signalant chaque dossier cible
+    /// (nom dans `names`) rencontré sans y descendre.
+    private static func walkForDirectories(_ url: URL, matching names: Set<String>, record: (URL) -> Void) {
         let node = info(for: url)
         guard node.isDirectory && !node.isSymlink else { return }
 
-        if url.lastPathComponent == "node_modules" {
+        if names.contains(url.lastPathComponent) {
             record(url)
             return
         }
@@ -383,11 +404,11 @@ public enum FileScanner {
 
         for case let element as URL in enumerator {
             // Comparaison de nom d'abord (gratuite) : on évite ainsi un `stat`
-            // sur les millions de fichiers qui ne s'appellent pas node_modules.
+            // sur les millions de fichiers qui ne portent pas un nom cible.
             let name = element.lastPathComponent
-            if name == "node_modules" {
+            if names.contains(name) {
                 guard isRealDirectory(element) else { continue }
-                // Ne pas descendre : la taille du node_modules inclut déjà ses enfants.
+                // Ne pas descendre : la taille du dossier inclut déjà ses enfants.
                 enumerator.skipDescendants()
                 record(element)
             } else if prunedDirectoryNames.contains(name) {
@@ -397,8 +418,8 @@ public enum FileScanner {
         }
     }
 
-    /// Construit l'`Entry` d'un node_modules : taille récursive (cachée) + date de modification.
-    private static func nodeModuleEntry(for url: URL) -> Entry {
+    /// Construit l'`Entry` d'un dossier cible : taille récursive (cachée) + date de modification.
+    private static func directoryEntry(for url: URL) -> Entry {
         Entry(
             url: url,
             name: url.lastPathComponent,
@@ -406,6 +427,181 @@ public enum FileScanner {
             isDirectory: true,
             modifiedAt: modificationDate(of: url)
         )
+    }
+
+    // MARK: - Gros fichiers (top-N récursif)
+
+    /// Les `limit` plus **gros fichiers** (jamais des dossiers) sous `root`,
+    /// recherchés récursivement n'importe où. Parcours parallèle, top-N maintenu
+    /// par un min-heap borné (aucun tri global), trié décroissant en sortie.
+    public static func findLargestFiles(under root: URL, limit: Int = 100) async -> [Entry] {
+        await Task.detached(priority: .userInitiated) {
+            let heap = BoundedTopHeap(capacity: limit)
+            let counter = Locked<Int>(0)
+            scanLargestFiles(under: root, into: heap, counter: counter, stop: nil)
+            return heap.sortedSnapshot()
+        }.value
+    }
+
+    /// Variante en flux : émet le top-N courant pendant le parcours
+    /// (`isDiscovering = true`, barre indéterminée car le total n'est pas connu
+    /// d'avance), puis une émission finale figée (`isDiscovering = false`).
+    public static func findLargestFilesStream(under root: URL, limit: Int = 100) -> AsyncStream<ScanProgress> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let heap = BoundedTopHeap(capacity: limit)
+            let counter = Locked<Int>(0)
+            let stop = Locked<Bool>(false)
+
+            // Parcours lourd (synchrone, multicœur) sur une file globale : il ne
+            // doit pas bloquer la boucle d'échantillonnage asynchrone.
+            DispatchQueue.global(qos: .userInitiated).async {
+                scanLargestFiles(under: root, into: heap, counter: counter, stop: stop)
+                stop.withLock { $0 = true }   // signale la fin à l'échantillonneur
+                let n = counter.withLock { $0 }
+                continuation.yield(ScanProgress(
+                    entries: heap.sortedSnapshot(),
+                    completed: n,
+                    total: n,
+                    isDiscovering: false
+                ))
+                continuation.finish()
+            }
+
+            // Échantillonnage de la progression toutes les ~120 ms.
+            let sampler = Task.detached(priority: .utility) {
+                while !stop.withLock({ $0 }) {
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    if stop.withLock({ $0 }) { break }
+                    let n = counter.withLock { $0 }
+                    continuation.yield(ScanProgress(
+                        entries: heap.sortedSnapshot(),
+                        completed: n,
+                        total: n,
+                        isDiscovering: true
+                    ))
+                }
+            }
+
+            continuation.onTermination = { _ in
+                stop.withLock { $0 = true }
+                sampler.cancel()
+            }
+        }
+    }
+
+    /// Partitionne l'arbre en unités disjointes puis parcourt chacune en
+    /// parallèle, en proposant chaque fichier au heap borné. Les fichiers situés
+    /// aux niveaux intermédiaires (au-dessus des unités) sont comptés pendant le
+    /// partitionnement — chaque fichier est donc vu exactement une fois.
+    private static func scanLargestFiles(
+        under root: URL,
+        into heap: BoundedTopHeap,
+        counter: Locked<Int>,
+        stop: Locked<Bool>?
+    ) {
+        let (units, looseFiles) = buildFileSearchFrontier(from: root)
+
+        for file in looseFiles {
+            heap.offer(file)
+        }
+        counter.withLock { $0 += looseFiles.count }
+
+        guard !units.isEmpty else { return }
+
+        // `heap`, `counter`, `stop` et `units` sont `Sendable` ; on les capture
+        // directement dans le bloc parallèle.
+        DispatchQueue.concurrentPerform(iterations: units.count) { index in
+            if stop?.withLock({ $0 }) == true { return }
+            walkForLargestFiles(units[index], heap: heap, counter: counter, stop: stop)
+        }
+    }
+
+    /// Développe l'arbre niveau par niveau jusqu'à obtenir assez d'unités de
+    /// travail (≥ 4 × cœurs), en élaguant les dossiers internes et les liens.
+    /// Renvoie les sous-arbres disjoints restant à parcourir et les fichiers
+    /// rencontrés aux niveaux déjà développés (à comptabiliser directement).
+    private static func buildFileSearchFrontier(from root: URL) -> (units: [URL], looseFiles: [Entry]) {
+        let target = max(ProcessInfo.processInfo.activeProcessorCount * 4, 8)
+        var frontier: [URL] = [root]
+        var loose: [Entry] = []
+
+        while !frontier.isEmpty && frontier.count < target {
+            var next: [URL] = []
+            for dir in frontier {
+                let children = (try? FileManager.default.contentsOfDirectory(
+                    at: dir,
+                    includingPropertiesForKeys: infoKeys,
+                    options: []
+                )) ?? []
+
+                for child in children {
+                    let node = info(for: child)
+                    let name = child.lastPathComponent
+                    if node.isDirectory && !node.isSymlink {
+                        if prunedDirectoryNames.contains(name) { continue }
+                        next.append(child)
+                    } else if !node.isSymlink {
+                        loose.append(Entry(url: child, name: name, sizeBytes: node.size, isDirectory: false))
+                    }
+                }
+            }
+            frontier = next
+        }
+
+        return (frontier, loose)
+    }
+
+    /// Parcourt une unité (sous-arbre) et propose chaque fichier réel au heap.
+    /// Ne suit pas les liens, élague les dossiers internes, et s'interrompt si
+    /// `stop` est signalé (annulation coopérative).
+    private static func walkForLargestFiles(
+        _ url: URL,
+        heap: BoundedTopHeap,
+        counter: Locked<Int>,
+        stop: Locked<Bool>?
+    ) {
+        let node = info(for: url)
+        guard node.isDirectory && !node.isSymlink else {
+            if !node.isDirectory && !node.isSymlink {
+                heap.offer(Entry(url: url, name: url.lastPathComponent, sizeBytes: node.size, isDirectory: false))
+                counter.withLock { $0 += 1 }
+            }
+            return
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: infoKeys,
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else {
+            return
+        }
+
+        var examined = 0
+        for case let element as URL in enumerator {
+            examined += 1
+            if examined & 0x7FF == 0, stop?.withLock({ $0 }) == true { return }
+
+            let child = info(for: element)
+            if child.isSymlink {
+                if child.isDirectory { enumerator.skipDescendants() }
+                continue
+            }
+            if child.isDirectory {
+                if prunedDirectoryNames.contains(element.lastPathComponent) {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            heap.offer(Entry(
+                url: element,
+                name: element.lastPathComponent,
+                sizeBytes: child.size,
+                isDirectory: false
+            ))
+            counter.withLock { $0 += 1 }
+        }
     }
 
     // MARK: - Cache

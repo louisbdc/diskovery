@@ -119,21 +119,25 @@ final class FolderNavigatorViewModel {
         navigate(to: url)
     }
 
-    /// Met un élément (fichier ou dossier) à la Corbeille, puis le retire de la
-    /// liste. Les caches de tailles sont invalidés en arrière-plan car les
-    /// tailles des dossiers ancêtres changent.
-    func delete(_ entry: Entry) {
-        do {
-            try FileRemover.moveToTrash(entry.url)
-            entries = entries.filter { $0.url != entry.url }
-            statusMessage = "« \(entry.name) » mis à la corbeille."
-            Task {
-                if let current = currentURL {
-                    await FileScanner.invalidateCache(for: current)
-                }
-            }
-        } catch {
-            statusMessage = "Échec de la suppression : \(error.localizedDescription)"
+    /// Supprime les éléments cochés (vers la Corbeille ou définitivement), les
+    /// retire de la liste et invalide le cache du dossier courant (les tailles
+    /// des dossiers ancêtres changent).
+    func deleteSelected(_ urls: Set<URL>, permanently: Bool) {
+        let targets = entries.filter { urls.contains($0.url) }
+        guard !targets.isEmpty else { return }
+
+        let result = FileRemover.remove(targets.map(\.url), permanently: permanently)
+        let removed = Set(result.removed)
+        entries = entries.filter { !removed.contains($0.url) }
+
+        let freed = targets
+            .filter { removed.contains($0.url) }
+            .reduce(0) { $0 + $1.sizeBytes }
+
+        statusMessage = removalMessage(result, freed: freed, permanently: permanently)
+
+        if let current = currentURL {
+            Task { await FileScanner.invalidateCache(for: current) }
         }
     }
 

@@ -17,5 +17,7 @@ enum ToolRegistry {
     static let all: [ToolDescriptor] = [
         DiskUsageTool.descriptor,
         NodeModulesTool.descriptor,
+        LargeFilesTool.descriptor,
+        BuildCachesTool.descriptor,
     ]
 }

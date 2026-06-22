@@ -10,6 +10,9 @@ struct EntryTable: View {
     @Binding var sortOrder: [KeyPathComparator<Entry>]
     let firstColumnTitle: String
     var showsChevronForDirectories: Bool = true
+    /// Ensemble des URLs cochées : la colonne de cases à cocher (à gauche) permet
+    /// de sélectionner des éléments à supprimer directement.
+    @Binding var selection: Set<URL>
     var onActivate: (Entry) -> Void = { _ in }
     var onDelete: ((Entry) -> Void)?
 
@@ -17,15 +20,26 @@ struct EntryTable: View {
         entries.sorted(using: sortOrder)
     }
 
+    /// Fractions de proportion précalculées une fois par lot. Basées sur
+    /// `entries` (et non la liste triée) : le tri ne change pas le maximum, donc
+    /// changer de tri ne déclenche aucun recalcul.
+    private var fractions: [URL: Double] {
+        SizeProportion.fractions(for: entries)
+    }
+
     var body: some View {
         Table(sortedEntries, sortOrder: $sortOrder) {
+            TableColumn("") { entry in
+                SelectionCheckbox(selection: $selection, url: entry.url)
+            }
+            .width(28)
+
             TableColumn(firstColumnTitle, value: \.name) { entry in
                 nameCell(entry)
             }
 
             TableColumn("Taille", value: \.sizeBytes) { entry in
-                Text(SizeFormatter.string(entry.sizeBytes))
-                    .monospacedDigit()
+                SizeBarCell(sizeBytes: entry.sizeBytes, fraction: fractions[entry.id] ?? 0)
             }
             .width(min: 100, ideal: 120)
         }

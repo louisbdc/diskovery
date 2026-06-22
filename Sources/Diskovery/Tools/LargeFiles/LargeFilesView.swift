@@ -1,8 +1,8 @@
 import SwiftUI
 import DiskoveryCore
 
-struct DiskUsageView: View {
-    @Bindable var viewModel: FolderNavigatorViewModel
+struct LargeFilesView: View {
+    @Bindable var viewModel: LargeFilesViewModel
     @State private var isImporterPresented = false
     @State private var sortOrder = [KeyPathComparator(\Entry.sizeBytes, order: .reverse)]
     @State private var selection: Set<URL> = []
@@ -24,20 +24,18 @@ struct DiskUsageView: View {
         VStack(alignment: .leading, spacing: 0) {
             toolbar
 
-            if !viewModel.breadcrumb.isEmpty {
+            if viewModel.state == .scanning {
                 Divider()
-                Breadcrumb(items: viewModel.breadcrumb) { url in
-                    viewModel.navigateViaBreadcrumb(to: url)
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Analyse en cours… \(viewModel.scanCompleted) fichiers examinés")
+                    Spacer()
                 }
-            }
-
-            if viewModel.state == .scanning && viewModel.scanTotal > 0 {
-                Divider()
-                ScanProgressBar(
-                    fraction: viewModel.scanFraction,
-                    completed: viewModel.scanCompleted,
-                    total: viewModel.scanTotal
-                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .padding(.horizontal)
+                .padding(.vertical, 6)
             }
 
             if let message = viewModel.statusMessage {
@@ -68,8 +66,8 @@ struct DiskUsageView: View {
 
             content
         }
-        .navigationTitle("Espace disque")
-        .searchable(text: $viewModel.searchText, prompt: "Filtrer par nom")
+        .navigationTitle("Gros fichiers")
+        .searchable(text: $viewModel.searchText, prompt: "Filtrer par chemin")
         .fileImporter(
             isPresented: $isImporterPresented,
             allowedContentTypes: [.folder],
@@ -87,32 +85,25 @@ struct DiskUsageView: View {
     private var toolbar: some View {
         HStack(spacing: 8) {
             Button {
-                viewModel.goBack()
-            } label: {
-                Label("Retour", systemImage: "chevron.left")
-            }
-            .disabled(!viewModel.canGoBack)
-            .help("Revenir au dossier précédent")
-
-            Button {
                 isImporterPresented = true
             } label: {
                 Label("Choisir un dossier", systemImage: "folder.badge.plus")
             }
             .disabled(viewModel.state == .scanning)
 
-            Button {
-                viewModel.refreshCurrent()
-            } label: {
-                Label("Rafraîchir", systemImage: "arrow.clockwise")
+            Picker("Nombre", selection: $viewModel.limit) {
+                ForEach(LargeFilesViewModel.limitOptions, id: \.self) { n in
+                    Text("Top \(n)").tag(n)
+                }
             }
-            .disabled(viewModel.currentURL == nil || viewModel.state == .scanning)
-            .help("Recalculer les tailles (ignore le cache)")
+            .pickerStyle(.menu)
+            .fixedSize()
+            .help("Nombre de fichiers les plus gros à afficher")
 
             Spacer()
 
             if viewModel.state == .loaded {
-                Text("\(viewModel.entries.count) éléments · \(SizeFormatter.string(viewModel.currentTotalSize))")
+                Text("\(viewModel.entries.count) fichiers · \(SizeFormatter.string(viewModel.totalSize))")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -125,23 +116,23 @@ struct DiskUsageView: View {
         switch viewModel.state {
         case .idle:
             ToolWelcome(
-                icon: "internaldrive",
-                title: "Explorez votre espace disque",
-                message: "Choisissez un dossier pour voir, niveau par niveau, ce qui occupe le plus de place. Double-cliquez sur un dossier pour y entrer.",
-                hint: "Astuce : cochez des éléments pour les supprimer d'un coup.",
+                icon: "doc.text.magnifyingglass",
+                title: "Traquez les plus gros fichiers",
+                message: "Choisissez un dossier pour lister les fichiers les plus volumineux, où qu'ils se cachent dans l'arborescence.",
+                hint: "Astuce : cochez plusieurs fichiers pour les supprimer en une fois.",
                 actionTitle: "Choisir un dossier",
                 action: { isImporterPresented = true }
             )
         case .scanning where viewModel.entries.isEmpty:
-            ScanningView(message: "Analyse en cours…")
+            ScanningView(message: "Recherche des gros fichiers…")
         case .scanning, .loaded:
-            // Le tableau se remplit en direct pendant le scan, puis se fige une fois terminé.
             EntryTable(
                 entries: viewModel.filteredEntries,
                 sortOrder: $sortOrder,
-                firstColumnTitle: "Nom",
+                firstColumnTitle: "Fichier",
+                showsChevronForDirectories: false,
                 selection: $selection,
-                onActivate: { viewModel.activate($0) },
+                onActivate: { FinderReveal.reveal($0.url) },
                 onDelete: { pendingDeletion = PendingDeletion(single: $0) }
             )
         case .error(let message):

@@ -2,14 +2,12 @@ import Foundation
 import Observation
 import DiskoveryCore
 
-/// Recherche de tous les dossiers `node_modules`, avec affichage progressif,
-/// mise en avant des dossiers anciens et suppression (vers la Corbeille).
-///
-/// La portée de sécurité est maintenue sur le dossier racine pendant toute la
-/// session, pour permettre les suppressions après le scan.
+/// Recherche des dossiers de cache/artefacts de build (node_modules, target,
+/// dist, .gradle…) selon les écosystèmes activés, avec affichage progressif et
+/// suppression vers la Corbeille.
 @Observable
 @MainActor
-final class NodeModulesViewModel {
+final class BuildCachesViewModel {
     enum State: Equatable {
         case idle
         case scanning
@@ -25,14 +23,13 @@ final class NodeModulesViewModel {
     private(set) var statusMessage: String?
 
     var searchText: String = ""
-    var threshold: AgeThreshold = .oneMonth
+    var enabledEcosystems: Set<Ecosystem> = Set(Ecosystem.allCases) {
+        didSet { if enabledEcosystems != oldValue, rootURL != nil { scan() } }
+    }
 
     private var rootURL: URL?
     private var scopedRoot: URL?
     private var scanTask: Task<Void, Never>?
-
-    /// Recalculé à chaque accès pour refléter l'heure courante.
-    private var now: Date { Date() }
 
     var scanFraction: Double {
         scanTotal > 0 ? Double(scanCompleted) / Double(scanTotal) : 0
@@ -48,18 +45,9 @@ final class NodeModulesViewModel {
         entries.reduce(0) { $0 + $1.sizeBytes }
     }
 
-    func isOld(_ entry: Entry) -> Bool {
-        threshold.isOld(entry.modifiedAt, reference: now)
+    func ecosystem(for entry: Entry) -> Ecosystem? {
+        Ecosystem.first(forDirectoryNamed: entry.name)
     }
-
-    /// node_modules dépassant le seuil d'ancienneté.
-    var oldEntries: [Entry] {
-        let reference = now
-        return entries.filter { threshold.isOld($0.modifiedAt, reference: reference) }
-    }
-
-    var oldCount: Int { oldEntries.count }
-    var oldTotalSize: Int64 { oldEntries.reduce(0) { $0 + $1.sizeBytes } }
 
     // MARK: - Scan
 
@@ -86,6 +74,8 @@ final class NodeModulesViewModel {
 
     private func scan() {
         guard let root = rootURL else { return }
+        let names = Ecosystem.ruleNames(for: enabledEcosystems)
+
         scanTask?.cancel()
         state = .scanning
         entries = []
@@ -94,7 +84,7 @@ final class NodeModulesViewModel {
         isDiscovering = true
 
         scanTask = Task { [weak self] in
-            for await update in FileScanner.findNodeModulesStream(under: root) {
+            for await update in FileScanner.findDirectoriesStream(matching: names, under: root) {
                 guard !Task.isCancelled, let self else { return }
                 self.entries = update.entries
                 self.scanCompleted = update.completed
@@ -109,7 +99,7 @@ final class NodeModulesViewModel {
 
     // MARK: - Suppression
 
-    /// Supprime les node_modules cochés (vers la Corbeille ou définitivement).
+    /// Supprime les dossiers cochés (vers la Corbeille ou définitivement).
     func deleteSelected(_ urls: Set<URL>, permanently: Bool) {
         let targets = entries.filter { urls.contains($0.url) }
         guard !targets.isEmpty else { return }
@@ -127,8 +117,6 @@ final class NodeModulesViewModel {
         }
     }
 
-    /// Exécute une opération sur le système de fichiers en s'assurant que la
-    /// portée de sécurité du dossier racine est active.
     private func withScope(_ operation: () -> Void) {
         let needsScope = scopedRoot == nil
         let active = needsScope ? (rootURL?.startAccessingSecurityScopedResource() ?? false) : true
