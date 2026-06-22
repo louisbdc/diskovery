@@ -1,15 +1,52 @@
-# Swift Package Manager
+# ── Swift Package Manager ────────────────────────────────────────────────────
 .build/
 .swiftpm/
 Package.resolved
 
-# Build output / distribution
+# ── Build output / distribution ─────────────────────────────────────────────
 dist/
+*.dmg
+*.app/
 
-# macOS
-.DS_Store
-
-# Xcode
+# ── Xcode ────────────────────────────────────────────────────────────────────
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
+*.xcuserstate
 DerivedData/
+build/
+
+# ── macOS ────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# ── Secrets / signing / notarization (NE JAMAIS committer) ───────────────────
+# Certificats & clés
+*.p12
+*.pfx
+*.cer
+*.der
+*.pem
+*.key
+*.certSigningRequest
+# Profils de provisionnement
+*.provisionprofile
+*.mobileprovision
+# Clés API App Store Connect
+AuthKey_*.p8
+# Options d'export / configs de signature
+ExportOptions.plist
+# Variables d'environnement & secrets divers
+.env
+.env.*
+*.secret
+secrets.*
+credentials.*
+
+# ── Divers ───────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+.idea/
+.vscode/
