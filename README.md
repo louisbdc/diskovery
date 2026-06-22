@@ -28,7 +28,29 @@ swift test
 ./make-dmg.sh
 ```
 
-Génère `dist/Diskovery.app` et `dist/Diskovery.dmg` (non signé — au 1er lancement : clic droit > Ouvrir).
+Génère `dist/Diskovery.app` et `dist/Diskovery.dmg`. Le bundle est signé en ad-hoc
+(signature propre) mais **non notarisé** par Apple.
+
+## Première ouverture (app téléchargée)
+
+Diskovery n'est pas notarisée par Apple (la notarisation nécessite un compte Apple
+Developer payant). Après téléchargement, macOS affiche donc **un avertissement au
+premier lancement**. C'est normal — il suffit de l'autoriser une fois :
+
+**macOS 15 (Sequoia) et plus récent :**
+1. Double-cliquez sur Diskovery → un message indique qu'elle ne peut pas être ouverte.
+2. Ouvrez **Réglages Système → Confidentialité et sécurité**.
+3. En bas, à côté de « Diskovery a été bloqué… », cliquez **« Ouvrir quand même »**.
+4. Confirmez. Les lancements suivants se font normalement.
+
+**macOS 14 (Sonoma) et antérieur :**
+1. **Clic droit** (ou Ctrl-clic) sur Diskovery → **Ouvrir**.
+2. Dans la boîte de dialogue, cliquez **Ouvrir**.
+
+**Alternative en Terminal** (retire la mise en quarantaine) :
+```bash
+xattr -dr com.apple.quarantine /Applications/Diskovery.app
+```
 
 ## Benchmark
 

@@ -105,6 +105,15 @@ PLIST
 echo "==> Validating Info.plist"
 plutil -lint "${INFO_PLIST}"
 
+# --- 3c. Ad-hoc sign the bundle ----------------------------------------------
+# This produces a clean (well-formed) signature so a downloaded, quarantined app
+# shows the softer "unidentified developer" prompt instead of "is damaged".
+# NOTE: this is NOT a Developer ID signature and the app is NOT notarized, so a
+# first-launch Gatekeeper warning is still expected (see README "Première ouverture").
+echo "==> Ad-hoc signing the bundle"
+codesign --force --deep --sign - "${APP_DIR}"
+codesign --verify --deep --strict "${APP_DIR}" && echo "    signature OK"
+
 # --- 4. Create .dmg ----------------------------------------------------------
 echo "==> Creating ${APP_NAME}.dmg"
 hdiutil create \
