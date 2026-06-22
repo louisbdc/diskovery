@@ -145,14 +145,23 @@ elif [[ -n "${SIGN_IDENTITY}" ]]; then
     echo "==> Signed with Developer ID but DISKOVERY_NOTARY_PROFILE unset — skipping notarization"
 fi
 
-# --- 4. Create .dmg ----------------------------------------------------------
+# --- 4. Create .dmg (with drag-to-Applications layout) -----------------------
+# Stage the app next to a symlink to /Applications so the mounted .dmg lets the
+# user drag the app onto Applications.
 echo "==> Creating ${APP_NAME}.dmg"
+STAGING_PARENT="$(mktemp -d)"
+STAGING="${STAGING_PARENT}/stage"
+mkdir -p "${STAGING}"
+ditto "${APP_DIR}" "${STAGING}/${APP_NAME}.app"
+ln -s /Applications "${STAGING}/Applications"
+
 hdiutil create \
     -volname "${APP_NAME}" \
-    -srcfolder "${APP_DIR}" \
+    -srcfolder "${STAGING}" \
     -ov \
     -format UDZO \
     "${DMG_PATH}"
+rm -rf "${STAGING_PARENT}"
 
 # --- 5. Notarize + staple the .dmg itself ------------------------------------
 # So the downloaded .dmg opens cleanly too (not just the app inside it).
